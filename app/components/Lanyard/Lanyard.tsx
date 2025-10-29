@@ -1,25 +1,28 @@
-/* eslint-disable react/no-unknown-property */
+/* app/components/Lanyard/Lanyard.tsx */
 'use client';
-import { useEffect, useRef, useState } from 'react';
+
 import { Canvas, extend, useFrame } from '@react-three/fiber';
 import { useGLTF, useTexture, Environment, Lightformer } from '@react-three/drei';
+import { useEffect, useRef, useState } from 'react';
 import {
   BallCollider,
   CuboidCollider,
   Physics,
   RigidBody,
-  useRopeJoint,
+  useImpulseJoint,
   useSphericalJoint,
   RigidBodyProps
 } from '@react-three/rapier';
 import { MeshLineGeometry, MeshLineMaterial } from 'meshline';
 import * as THREE from 'three';
+import * as Rapier from '@dimforge/rapier3d'; // gunakan nama Rapier konsisten
 
-// replace with your own imports, see the usage snippet for details
-const cardGLB = '/public/assets/lanyard/card.glb';
-const lanyard = '/public/assets/lanyard/lanyard.png';
-
+// extend meshline ke three-fiber
 extend({ MeshLineGeometry, MeshLineMaterial });
+
+// asset paths (public folder)
+const cardGLB = '/assets/lanyard/card.glb';
+const lanyard = '/assets/lanyard/lanyard.png';
 
 interface LanyardProps {
   position?: [number, number, number];
@@ -86,7 +89,6 @@ interface BandProps {
 }
 
 function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
-  // Using "any" for refs since the exact types depend on Rapier's internals
   const band = useRef<any>(null);
   const fixed = useRef<any>(null);
   const j1 = useRef<any>(null);
@@ -111,7 +113,12 @@ function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
   const texture = useTexture(lanyard);
   const [curve] = useState(
     () =>
-      new THREE.CatmullRomCurve3([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()])
+      new THREE.CatmullRomCurve3([
+        new THREE.Vector3(),
+        new THREE.Vector3(),
+        new THREE.Vector3(),
+        new THREE.Vector3()
+      ])
   );
   const [dragged, drag] = useState<false | THREE.Vector3>(false);
   const [hovered, hover] = useState(false);
@@ -127,14 +134,24 @@ function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
     const handleResize = (): void => {
       setIsSmall(window.innerWidth < 1024);
     };
-
     window.addEventListener('resize', handleResize);
     return (): void => window.removeEventListener('resize', handleResize);
   }, []);
 
-  useRopeJoint(fixed, j1, [[0, 0, 0], [0, 0, 0], 1]);
-  useRopeJoint(j1, j2, [[0, 0, 0], [0, 0, 0], 1]);
-  useRopeJoint(j2, j3, [[0, 0, 0], [0, 0, 0], 1]);
+  // --- Joint setup (ImpulseJoint using Rapier.JointData.distance) ---
+  // buat jointParams sekali (tidak di setiap render)
+  const distance = 0.5;
+  const jointParams = Rapier.JointData.distance(
+    { x: 0, y: 0, z: 0 },
+    { x: 0, y: 0, z: 0 }
+  );
+
+  // pasang joint ke refs — hook harus dipanggil pada level komponen (bukan kondisi)
+  useImpulseJoint(fixed, j1, jointParams);
+  useImpulseJoint(j1, j2, jointParams);
+  useImpulseJoint(j2, j3, jointParams);
+
+  // spherical untuk ujung
   useSphericalJoint(j3, card, [
     [0, 0, 0],
     [0, 1.45, 0]
@@ -155,34 +172,67 @@ function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
       dir.copy(vec).sub(state.camera.position).normalize();
       vec.add(dir.multiplyScalar(state.camera.position.length()));
       [card, j1, j2, j3, fixed].forEach(ref => ref.current?.wakeUp());
-      card.current?.setNextKinematicTranslation({
-        x: vec.x - dragged.x,
-        y: vec.y - dragged.y,
-        z: vec.z - dragged.z
-      });
+      if (card.current?.setNextKinematicTranslation) {
+        card.current.setNextKinematicTranslation({
+          x: vec.x - dragged.x,
+          y: vec.y - dragged.y,
+          z: vec.z - dragged.z
+        });
+      }
     }
+
     if (fixed.current) {
       [j1, j2].forEach(ref => {
         if (!ref.current.lerped) ref.current.lerped = new THREE.Vector3().copy(ref.current.translation());
-        const clampedDistance = Math.max(0.1, Math.min(1, ref.current.lerped.distanceTo(ref.current.translation())));
+        const clampedDistance = Math.max(
+          0.1,
+          Math.min(1, ref.current.lerped.distanceTo(ref.current.translation()))
+        );
         ref.current.lerped.lerp(
           ref.current.translation(),
           delta * (minSpeed + clampedDistance * (maxSpeed - minSpeed))
         );
       });
-      curve.points[0].copy(j3.current.translation());
-      curve.points[1].copy(j2.current.lerped);
-      curve.points[2].copy(j1.current.lerped);
-      curve.points[3].copy(fixed.current.translation());
-      band.current.geometry.setPoints(curve.getPoints(32));
-      ang.copy(card.current.angvel());
-      rot.copy(card.current.rotation());
-      card.current.setAngvel({ x: ang.x, y: ang.y - rot.y * 0.25, z: ang.z });
+
+      if (
+        j3.current &&
+        j2.current &&
+        j1.current &&
+        fixed.current &&
+        band.current?.geometry &&
+        card.current
+      ) {
+        curve.points[0].copy(j3.current.translation());
+        curve.points[1].copy(j2.current.lerped);
+        curve.points[2].copy(j1.current.lerped);
+        curve.points[3].copy(fixed.current.translation());
+        band.current.geometry.setPoints(curve.getPoints(32));
+
+        ang.copy(typeof card.current.angvel === 'function' ? card.current.angvel() : new THREE.Vector3());
+        rot.copy(card.current.rotation ? card.current.rotation() : new THREE.Vector3());
+        if (card.current?.setAngvel) {
+          card.current.setAngvel({ x: ang.x, y: ang.y - rot.y * 0.25, z: ang.z });
+        }
+      }
     }
   });
 
   curve.curveType = 'chordal';
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+
+  // set anisotropy via texture object (jika tersedia)
+  useEffect(() => {
+    if (texture && typeof texture !== 'number') {
+      try {
+        const renderer = new THREE.WebGLRenderer();
+        const maxAniso = renderer.capabilities.getMaxAnisotropy?.() ?? 1;
+        texture.anisotropy = Math.min(16, maxAniso);
+        renderer.dispose();
+      } catch {
+        // ignore if WebGLRenderer can't be created (safety)
+      }
+    }
+  }, [texture]);
 
   return (
     <>
@@ -197,6 +247,7 @@ function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
         <RigidBody position={[1.5, 0, 0]} ref={j3} {...segmentProps} type={'dynamic' as RigidBodyProps['type']}>
           <BallCollider args={[0.1]} />
         </RigidBody>
+
         <RigidBody
           position={[2, 0, 0]}
           ref={card}
@@ -221,7 +272,6 @@ function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
             <mesh geometry={nodes.card.geometry}>
               <meshPhysicalMaterial
                 map={materials.base.map}
-                map-anisotropy={16}
                 clearcoat={1}
                 clearcoatRoughness={0.15}
                 roughness={0.9}
@@ -233,10 +283,10 @@ function Band({ maxSpeed = 50, minSpeed = 0 }: BandProps) {
           </group>
         </RigidBody>
       </group>
+
       <mesh ref={band}>
         <meshLineGeometry />
         <meshLineMaterial
-          color="white"
           depthTest={false}
           resolution={isSmall ? [1000, 2000] : [1000, 1000]}
           useMap

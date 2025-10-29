@@ -1,17 +1,9 @@
-import Image from "next/image";
-import Lanyard from "./components/Lanyard/Lanyard";
+import LanyardWrapper from './components/Lanyard/LanyardWrapper';
 
-export default function Home() {
-  return(
-    <div className="min-h-screen overflow-x-hidden">
-      <div className="container mx-auto h-screen">
-        <div className="grid grid-cols-12">
-          <div className="col-span-6">A</div>
-          <div className="col-span-6">
-            <Lanyard/>
-          </div>
-        </div>
-      </div>
-    </div>
+export default function Page() {
+  return (
+    <main className="min-h-screen bg-black flex items-center justify-center">
+      <LanyardWrapper />
+    </main>
   );
 }
